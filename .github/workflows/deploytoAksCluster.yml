@@ -1,0 +1,50 @@
+on: [push]
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    
+    - uses: azure/docker-login@v1
+      with:
+        login-server: gobesacr.azurecr.io
+        username: ${{ secrets.acr_gobesacr_username }}
+        password: ${{ secrets.acr_gobesacr_password }}
+    
+    - name: Build and push image to ACR
+      id: build-image
+      run: |
+        docker build "$GITHUB_WORKSPACE/images/pgbouncer" -f  "images/pgbouncer/Dockerfile" -t gobesacr.azurecr.io/airflowaks:${{ github.sha }} --label dockerfile-path=images/pgbouncer/Dockerfile
+        docker push gobesacr.azurecr.io/airflowaks:${{ github.sha }}
+    
+    - uses: azure/k8s-set-context@v1
+      with:
+         kubeconfig: ${{ secrets.aks_airflowaks_kubeConfig }}
+      id: login
+    
+    - name: Create namespace
+      run: |
+        namespacePresent=`kubectl get namespace | grep airflow-aks91c3 | wc -l`
+        if [ $namespacePresent -eq 0 ]
+        then
+            echo `kubectl create namespace airflow-aks91c3`
+        fi
+
+    - uses: azure/k8s-create-secret@v1
+      with:
+        namespace: airflow-aks91c3
+        container-registry-url: gobesacr.azurecr.io
+        container-registry-username: ${{ secrets.acr_gobesacr_username }}
+        container-registry-password: ${{ secrets.acr_gobesacr_password }}
+        secret-name: airflowaksdockerauth
+       
+    - uses: azure/k8s-deploy@v1.2
+      with:
+        namespace: airflow-aks91c3
+        manifests: |
+          manifests/deployment.yml
+          manifests/service.yml
+        images: |
+          gobesacr.azurecr.io/airflowaks:${{ github.sha }}
+        imagepullsecrets: |
+          airflowaksdockerauth
